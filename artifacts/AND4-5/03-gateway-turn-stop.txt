@@ -1,0 +1,3 @@
+8月 31 11:58:00 yy-MS-7A40 python[462600]: 2026-08-31 11:58:00.994 | DEBUG    | pipecat.turns.user_start.external_user_turn_start_strategy:process_frame:71 - ExternalUserTurnStartStrategy#37: resolving a proposed user turn start
+8月 31 11:58:06 yy-MS-7A40 python[462600]: 2026-08-31 11:58:06.353 | DEBUG    | pipecat.turns.user_stop.external_user_turn_stop_strategy:_trigger_user_turn_stopped:214 - ExternalUserTurnStopStrategy#37: resolving a proposed user turn stop
+8月 31 11:58:06 yy-MS-7A40 python[462600]: 2026-08-31 11:58:06.353 | DEBUG    | pipecat.processors.aggregators.llm_response_universal:_on_user_turn_inference_triggered:1284 - LLMUserAggregator#37: User turn inference triggered (strategy: ExternalUserTurnStopStrategy#37) [realtime mode: event-only, no context push]

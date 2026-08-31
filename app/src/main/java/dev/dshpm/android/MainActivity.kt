@@ -99,6 +99,7 @@ class MainActivity : ComponentActivity() {
             audioPort = { pcm -> audioRef.get().invoke(pcm) },
             mic = mic,
             player = player,
+            log = { msg -> android.util.Log.i("DshPmVoice", msg) },
         )
         voice.onChange = { next -> runOnUiThread { voiceState = next } }
 

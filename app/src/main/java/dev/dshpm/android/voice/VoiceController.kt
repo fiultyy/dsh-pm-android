@@ -50,7 +50,31 @@ class VoiceController(
     private val mic: MicSource,
     private val player: PlayerSink,
     private val nowMs: () -> Long = System::currentTimeMillis,
+    /** AND4-5: tail pacing abstraction (tests inject a synchronous recorder). */
+    private val tailScheduler: TailScheduler = ThreadedTailScheduler(),
+    /** AND4-5 diagnostics: production wires Log.i("DshPmVoice", …); tests no-op. */
+    private val log: (String) -> Unit = {},
 ) : GatewayListener {
+
+    /** Spaced no-arg emitter: runs [emit] `count` times, `paceMs` apart. */
+    fun interface TailScheduler {
+        fun schedule(count: Int, paceMs: Long, emit: () -> Unit)
+    }
+
+    /** Production: real-time pacing on a daemon thread — one 200 ms block per tick. */
+    class ThreadedTailScheduler : TailScheduler {
+        @Volatile private var stopped = false
+        override fun schedule(count: Int, paceMs: Long, emit: () -> Unit) {
+            Thread {
+                repeat(count) {
+                    if (stopped) return@Thread
+                    emit()
+                    try { Thread.sleep(paceMs) } catch (_: InterruptedException) { return@Thread }
+                }
+            }.apply { isDaemon = true; name = "dshpm-tail" }.start()
+        }
+        fun stop() { stopped = true }
+    }
 
     enum class SessionState { IDLE, STARTING, LIVE, ENDED }
 
@@ -142,6 +166,35 @@ class VoiceController(
         mic.stop()
         coalescer.flushRemainder()
         update(state.copy(ptt = PttState.IDLE))
+        sendSilenceTail()
+    }
+
+    /**
+     * AND4-5 松开静音尾: on a USER-initiated release the upstream stops
+     * abruptly, and the head-side VAD — which needs closing silence FRAMES —
+     * then stalls on its internal timeout (>30 s) before user_end. Append
+     * [TAIL_BLOCKS] × 200 ms all-zero PCM through the existing send path,
+     * paced one 200 ms block per tick (capture cadence), so the VAD sees the
+     * trailing silence it needs and closes the turn in ~1.5 s. The
+     * SERVER-driven yield path ([autoYield])
+     * deliberately sends NO tail: the turn already flipped, and stale zeros
+     * there would delay the reply. Blocks are suppressed if a new press starts
+     * before the tail finishes (zeros must not interleave with fresh speech).
+     */
+    private fun sendSilenceTail() {
+        log("silence tail scheduled: $TAIL_BLOCKS x $TAIL_PACE_MS ms zero blocks")
+        var sent = 0
+        tailScheduler.schedule(TAIL_BLOCKS, TAIL_PACE_MS) {
+            if (state.ptt != PttState.CAPTURING) {
+                runCatching { audio(ByteArray(ChunkCoalescer.SEND_BYTES)) }
+                    .onFailure { log("tail block ${sent + 1} send FAILED: ${it.javaClass.simpleName}: ${it.message}") }
+                sent++
+                state = state.copy(upstreamBlocks = state.upstreamBlocks + 1)
+                log("tail zero block $sent/$TAIL_BLOCKS sent")
+            } else {
+                log("tail block ${sent + 1} suppressed (new capture active)")
+            }
+        }
     }
 
     /** Mic blocks land here (production: MicSource callback; tests: direct). */
@@ -319,5 +372,16 @@ class VoiceController(
 
         /** Transcript phase tag for an AND4-4 server-driven yield note. */
         const val YIELD_PHASE = "yield"
+
+        /**
+         * AND4-5: release silence tail — 10 × 200 ms zero blocks = 2 s.
+         * 真机标定 (NE2210, 2026-08-31): the QwenOmni endpointer needs
+         * ≥~1.3 s of trailing silence; the originally sketched 600 ms
+         * (3 blocks) NEVER closed the turn (3 trials, no user_end within
+         * 10-60 s), while 2 s closed it at ~1.3-1.45 s and the reply beat
+         * the 3 s acceptance bar (measured 1.45 s).
+         */
+        const val TAIL_BLOCKS = 10
+        const val TAIL_PACE_MS = 200L
     }
 }

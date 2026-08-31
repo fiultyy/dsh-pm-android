@@ -36,17 +36,34 @@ class VoiceControllerTest {
         override fun close() {}
     }
 
+    /** AND4-5: records tail scheduling; blocks emit only on explicit flush(). */
+    private class FakeTail : VoiceController.TailScheduler {
+        var calls = 0; var lastCount = 0; var lastPace = 0L
+        private var emit: (() -> Unit)? = null
+        private var remaining = 0
+        override fun schedule(count: Int, paceMs: Long, emit: () -> Unit) {
+            calls++; lastCount = count; lastPace = paceMs
+            this.emit = emit; remaining = count
+        }
+        fun flush(n: Int = remaining) {
+            val e = emit ?: return
+            repeat(minOf(n, remaining)) { remaining--; e() }
+        }
+    }
+
     private class Env {
         val sent = mutableListOf<ClientFrame>()
         val audio = mutableListOf<ByteArray>()
         val mic = FakeMic()
         val player = FakePlayer()
+        val tail = FakeTail()
         val ctrl = VoiceController(
             sendPort = { sent.add(it) },
             audioPort = { audio.add(it) },
             mic = mic,
             player = player,
             nowMs = { 1_000L },
+            tailScheduler = tail,
         )
 
         fun connectAndStartSession() {
@@ -230,6 +247,7 @@ class VoiceControllerTest {
         assertEquals(VoiceController.PttState.IDLE, e.ctrl.state.ptt) // button visual reset
         assertFalse(e.ctrl.state.muted) // mute window opened
         assertEquals(0, e.audio.size) // 停合块: stale partial discarded, not flushed
+        assertEquals(0, e.tail.calls) // AND4-5: yield stop sends NO silence tail
         val yield = e.ctrl.state.transcript.filter { it.phase == VoiceController.YIELD_PHASE }
         assertEquals(1, yield.size)
         assertTrue(yield[0].detail!!.contains("自动让位"))
@@ -314,6 +332,7 @@ class VoiceControllerTest {
         e.ctrl.pttUp() // the finger finally comes off — much later
         assertEquals(1, e.mic.stops) // NOT stopped a second time
         assertEquals(0, e.audio.size) // reset coalescer had nothing to flush
+        assertEquals(0, e.tail.calls) // AND4-5: yield stop sends NO silence tail
         assertEquals(VoiceController.PttState.IDLE, e.ctrl.state.ptt)
     }
 
@@ -331,6 +350,7 @@ class VoiceControllerTest {
         e.ctrl.pttUp() // and manual release still works normally
         assertEquals(1, e.mic.stops)
         assertEquals(3, e.audio.size) // remainder flushed
+        assertEquals(1, e.tail.calls) // AND4-5: release schedules the silence tail
     }
 
     /** After a yield the button is reusable: a new press starts a fresh round. */
@@ -347,5 +367,81 @@ class VoiceControllerTest {
         e.ctrl.onFrame(HeadTurn(phase = "user_end")) // and can yield again
         assertEquals(2, e.mic.stops)
         assertEquals(2, e.ctrl.state.transcript.count { it.phase == VoiceController.YIELD_PHASE })
+    }
+
+    // -------------------------------------------- AND4-5 松开静音尾
+
+    /** User release appends 3 × 200 ms all-zero blocks (600 ms) through the
+     *  existing send path, paced at 200 ms per block, after the flush. */
+    @Test
+    fun releaseAppendsPacedZeroTail() {
+        val e = Env()
+        e.connectAndStartSession()
+        val before = e.ctrl.state.upstreamBlocks
+        e.ctrl.pttDown()
+        repeat(2) { e.micBlock() } // real speech…
+        e.ctrl.pttUp()             // …then release
+        assertEquals(1, e.tail.calls) // exactly one tail schedule per release
+        assertEquals(VoiceController.TAIL_BLOCKS, e.tail.lastCount)
+        assertEquals(VoiceController.TAIL_PACE_MS, e.tail.lastPace) // 200 ms pacing request
+        assertEquals(1, e.audio.size) // flush first — tail not yet flowing
+        e.tail.flush()
+        assertEquals(VoiceController.TAIL_BLOCKS, e.audio.size - 1) // full tail flowed
+        val tailBlocks = e.audio.drop(1)
+        tailBlocks.forEachIndexed { i, b ->
+            assertEquals(ChunkCoalescer.SEND_BYTES, b.size) // full 200 ms block each
+            assertTrue("tail block $i must be all-zero", b.all { it == 0.toByte() })
+        }
+        assertEquals(before + 1, e.ctrl.state.upstreamBlocks - VoiceController.TAIL_BLOCKS)
+    }
+
+    /** Server-driven yield stop sends NO tail — the turn already flipped. */
+    @Test
+    fun yieldStopSendsNoTailEvenAcrossAssistantPhases() {
+        val e = Env()
+        e.connectAndStartSession()
+        e.ctrl.pttDown()
+        repeat(4) { e.micBlock() }
+        e.ctrl.onFrame(HeadTurn(phase = "user_end")) // yield (no tail)
+        e.ctrl.onFrame(HeadTurn(phase = "assistant_start"))
+        e.ctrl.onFrame(HeadTurn(phase = "assistant_end"))
+        assertEquals(0, e.tail.calls)
+        e.ctrl.pttUp() // late release — no-op, still no tail
+        assertEquals(0, e.tail.calls)
+    }
+
+    /** A new press before the tail finishes suppresses the remaining zero
+     *  blocks — zeros must not interleave with the fresh utterance. */
+    @Test
+    fun repressDuringTailSuppressesRemainingZeroBlocks() {
+        val e = Env()
+        e.connectAndStartSession()
+        e.ctrl.pttDown()
+        repeat(2) { e.micBlock() }
+        e.ctrl.pttUp()
+        e.tail.flush(1) // first zero block flows…
+        val afterOne = e.audio.size
+        assertEquals(2, afterOne) // flush + 1 tail block
+        e.ctrl.pttDown() // …user presses again mid-tail
+        repeat(1) { e.micBlock() } // fresh speech enters the coalescer
+        e.tail.flush() // remaining blocks must be suppressed
+        assertEquals(afterOne, e.audio.size) // NO further sends during capture
+        // and the fresh round's own release schedules its own tail
+        e.ctrl.pttUp()
+        assertEquals(2, e.tail.calls)
+        e.tail.flush()
+        assertEquals(afterOne + 1 + VoiceController.TAIL_BLOCKS, e.audio.size) // flush + own tail
+    }
+
+    /** Deactivate during a hold routes through pttUp: tail schedules (harmless
+     *  on session end) but blocks stop with the scheduler's suppression guard. */
+    @Test
+    fun deactivateDuringHoldSchedulesTailOnce() {
+        val e = Env()
+        e.connectAndStartSession()
+        e.ctrl.pttDown()
+        repeat(2) { e.micBlock() }
+        e.ctrl.deactivate()
+        assertEquals(1, e.tail.calls)
     }
 }

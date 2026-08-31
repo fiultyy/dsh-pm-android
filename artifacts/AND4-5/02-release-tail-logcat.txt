@@ -1,0 +1,23 @@
+08-31 11:57:59.052 I/DshPmVoice(21316): capture started: 16000Hz mono int16, block=800 samples
+08-31 11:57:59.691 I/DshPmVoice(21316): playback dropped (interrupt sentinel); written so far 0B
+08-31 11:57:59.691 I/DshPmVoice(21316): playback dropped (interrupt sentinel); written so far 0B
+08-31 11:58:04.287 I/DshPmVoice(21316): capture stopped
+08-31 11:58:04.288 I/DshPmVoice(21316): silence tail scheduled: 10 x 200 ms zero blocks
+08-31 11:58:04.292 I/DshPmVoice(21316): tail zero block 1/10 sent
+08-31 11:58:04.494 I/DshPmVoice(21316): tail zero block 2/10 sent
+08-31 11:58:04.697 I/DshPmVoice(21316): tail zero block 3/10 sent
+08-31 11:58:04.899 I/DshPmVoice(21316): tail zero block 4/10 sent
+08-31 11:58:05.104 I/DshPmVoice(21316): tail zero block 5/10 sent
+08-31 11:58:05.304 I/DshPmVoice(21316): tail zero block 6/10 sent
+08-31 11:58:05.505 I/DshPmVoice(21316): tail zero block 7/10 sent
+08-31 11:58:05.707 I/DshPmVoice(21316): tail zero block 8/10 sent
+08-31 11:58:05.722 I/DshPmVoice(21316): downlink binary #1: 15360B
+08-31 11:58:05.784 I/DshPmVoice(21316): AudioTrack created+playing (USAGE_MEDIA/SPEECH, vol=1.0)
+08-31 11:58:05.909 I/DshPmVoice(21316): tail zero block 9/10 sent
+08-31 11:58:06.112 I/DshPmVoice(21316): tail zero block 10/10 sent
+08-31 11:58:06.832 I/DshPmVoice(21316): write accounting: 4 calls, 61440B (1280ms audio)
+08-31 11:58:07.211 I/DshPmVoice(21316): downlink binary #25: 15360B
+08-31 11:58:08.152 I/DshPmVoice(21316): write accounting: 8 calls, 122880B (2560ms audio)
+08-31 11:58:09.472 I/DshPmVoice(21316): write accounting: 12 calls, 184320B (3840ms audio)
+08-31 11:58:10.673 I/DshPmVoice(21316): write accounting: 16 calls, 245760B (5120ms audio)
+08-31 11:58:11.993 I/DshPmVoice(21316): write accounting: 20 calls, 307200B (6400ms audio)
