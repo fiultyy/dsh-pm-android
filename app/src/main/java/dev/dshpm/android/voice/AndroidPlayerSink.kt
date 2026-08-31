@@ -21,8 +21,11 @@ interface AudioTrackHandle {
     fun release()
     fun setVolume(v: Float)
 
-    /** Blocking write; returns bytes written (0/negative = failure). */
-    fun write(bytes: ByteArray): Int
+    /** Blocking slice write; returns bytes accepted (may be short, 0/negative = failure). */
+    fun write(bytes: ByteArray, offset: Int, size: Int): Int
+
+    /** Whole-array convenience — delegates to the slice write. */
+    fun write(bytes: ByteArray): Int = write(bytes, 0, bytes.size)
 }
 
 interface TrackFactory {
@@ -68,9 +71,9 @@ class AudioTrackTrackFactory : TrackFactory {
         override fun release() = track.release()
         override fun setVolume(v: Float) { track.setVolume(v) }
 
-        override fun write(bytes: ByteArray): Int =
+        override fun write(bytes: ByteArray, offset: Int, size: Int): Int =
             // explicit mode: the 3-arg legacy write throws "Invalid mode" on API 36
-            track.write(bytes, 0, bytes.size, AudioTrack.WRITE_BLOCKING)
+            track.write(bytes, offset, size, AudioTrack.WRITE_BLOCKING)
     }
 }
 
@@ -104,6 +107,10 @@ class AndroidPlayerSink(
         thread = Thread({
             var track: AudioTrackHandle? = null
             var lastLogWritten = 0L
+            // AND4-6: the drop sentinel pauses+flushes the live track; without
+            // a resume the next utterance only fills the 9.6 kB buffer and
+            // every later reply stays silent (真机 89 帧全到无声 case).
+            var pausedAfterDrop = false
             Log.i(TAG, "playback worker up: ${sampleRate}Hz mono int16")
             while (started.get()) {
                 val item = try {
@@ -117,6 +124,7 @@ class AndroidPlayerSink(
                             runCatching { it.pause() }
                             runCatching { it.flush() } // discard buffered samples
                         }
+                        pausedAfterDrop = track != null
                         queue.clear() // drop everything queued behind us too
                         Log.i(TAG, "playback dropped (interrupt sentinel); written so far ${writtenBytes.get()}B")
                     }
@@ -128,17 +136,32 @@ class AndroidPlayerSink(
                                     it.play()
                                     Log.i(TAG, "AudioTrack created+playing (USAGE_MEDIA/SPEECH, vol=1.0)")
                                 }
+                                pausedAfterDrop = false // fresh track already playing
                             }
                             if (track != null) {
-                                val n = track.write(item.bytes)
-                                writeCalls.incrementAndGet()
-                                if (n > 0) writtenBytes.addAndGet(n.toLong())
-                                // ②d: periodic write accounting (every ~1s of audio)
-                                if (writtenBytes.get() - lastLogWritten >= sampleRate * 2) {
-                                    lastLogWritten = writtenBytes.get()
-                                    Log.i(TAG, "write accounting: ${writeCalls.get()} calls, ${writtenBytes.get()}B (${writtenBytes.get() * 1000 / (sampleRate * 2)}ms audio)")
+                                if (pausedAfterDrop) {
+                                    // AND4-6: resume BEFORE writing — a paused
+                                    // MODE_STREAM track never drains its buffer.
+                                    track.play()
+                                    pausedAfterDrop = false
+                                    Log.i(TAG, "playback resumed after interrupt drop")
                                 }
-                                if (n < 0) Log.w(TAG, "write returned $n")
+                                var offset = 0
+                                while (offset < item.bytes.size) {
+                                    val n = track.write(item.bytes, offset, item.bytes.size - offset)
+                                    if (n <= 0) {
+                                        Log.w(TAG, "write returned $n at offset $offset/${item.bytes.size}")
+                                        break
+                                    }
+                                    offset += n
+                                    writeCalls.incrementAndGet()
+                                    writtenBytes.addAndGet(n.toLong())
+                                    // ②d: periodic write accounting (every ~1s of audio)
+                                    if (writtenBytes.get() - lastLogWritten >= sampleRate * 2) {
+                                        lastLogWritten = writtenBytes.get()
+                                        Log.i(TAG, "write accounting: ${writeCalls.get()} calls, ${writtenBytes.get()}B (${writtenBytes.get() * 1000 / (sampleRate * 2)}ms audio)")
+                                    }
+                                }
                             } else {
                                 Log.w(TAG, "no track (device unavailable); dropped ${item.bytes.size}B")
                             }
@@ -146,6 +169,7 @@ class AndroidPlayerSink(
                             Log.e(TAG, "playback write failed: ${t.message}")
                             runCatching { track?.release() }
                             track = null
+                            pausedAfterDrop = false
                         }
                     }
                 }

@@ -1,0 +1,27 @@
+08-31 12:12:23.401 I/DshPmVoice(23805): capture started: 16000Hz mono int16, block=800 samples
+08-31 12:12:24.347 I/DshPmVoice(23805): playback dropped (interrupt sentinel); written so far 0B
+08-31 12:12:28.585 I/DshPmVoice(23805): capture stopped
+08-31 12:12:28.586 I/DshPmVoice(23805): silence tail scheduled: 10 x 200 ms zero blocks
+08-31 12:12:30.097 I/DshPmVoice(23805): downlink binary #1: 15360B
+08-31 12:12:30.160 I/DshPmVoice(23805): AudioTrack created+playing (USAGE_MEDIA/SPEECH, vol=1.0)
+08-31 12:12:30.417 I/DshPmVoice(23805): tail zero block 10/10 sent
+08-31 12:12:31.213 I/DshPmVoice(23805): write accounting: 4 calls, 61440B (1280ms audio)
+08-31 12:12:31.463 I/DshPmVoice(23805): downlink binary #25: 15360B
+08-31 12:12:32.535 I/DshPmVoice(23805): write accounting: 8 calls, 122880B (2560ms audio)
+08-31 12:12:33.854 I/DshPmVoice(23805): write accounting: 12 calls, 184320B (3840ms audio)
+08-31 12:12:35.054 I/DshPmVoice(23805): write accounting: 16 calls, 245760B (5120ms audio)
+08-31 12:12:36.374 I/DshPmVoice(23805): write accounting: 20 calls, 307200B (6400ms audio)
+08-31 12:12:37.695 I/DshPmVoice(23805): write accounting: 24 calls, 368640B (7680ms audio)
+08-31 12:12:45.566 I/DshPmVoice(23805): capture started: 16000Hz mono int16, block=800 samples
+08-31 12:12:46.256 I/DshPmVoice(23805): playback dropped (interrupt sentinel); written so far 395520B
+08-31 12:12:50.798 I/DshPmVoice(23805): capture stopped
+08-31 12:12:50.799 I/DshPmVoice(23805): silence tail scheduled: 10 x 200 ms zero blocks
+08-31 12:12:52.298 I/DshPmVoice(23805): playback resumed after interrupt drop
+08-31 12:12:52.648 I/DshPmVoice(23805): tail zero block 10/10 sent
+08-31 12:12:52.758 I/DshPmVoice(23805): write accounting: 28 calls, 426240B (8880ms audio)
+08-31 12:12:53.567 I/DshPmVoice(23805): downlink binary #50: 15360B
+08-31 12:12:54.079 I/DshPmVoice(23805): write accounting: 32 calls, 487680B (10160ms audio)
+08-31 12:12:55.278 I/DshPmVoice(23805): write accounting: 36 calls, 549120B (11440ms audio)
+08-31 12:12:56.599 I/DshPmVoice(23805): write accounting: 40 calls, 610560B (12720ms audio)
+08-31 12:12:57.919 I/DshPmVoice(23805): write accounting: 44 calls, 672000B (14000ms audio)
+08-31 12:12:59.119 I/DshPmVoice(23805): write accounting: 48 calls, 733440B (15280ms audio)
