@@ -12,7 +12,7 @@ android {
         minSdk = 26
         targetSdk = 34
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = "0.3.0"
     }
 
     buildTypes {
@@ -39,6 +39,9 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -51,6 +54,19 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
 
-    // Pure-JVM protocol module (frame codec lands in AND2-3).
+    // Pure-JVM protocol module (AND2-3): frames + WS client; api-exposes
+    // kotlinx-serialization-json for JsonObject parsing in this module too.
     implementation(project(":proto"))
+
+    testImplementation("junit:junit:4.13.2")
+}
+
+tasks.withType<Test> {
+    // Integration tests (real gateway) read this; default "false" keeps them skipped.
+    systemProperty(
+        "dshpm.integration",
+        providers.environmentVariable("DASHPM_INTEGRATION")
+            .orElse(providers.gradleProperty("integration"))
+            .orElse("false"),
+    )
 }

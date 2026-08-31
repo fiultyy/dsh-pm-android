@@ -11,7 +11,10 @@
     <application
         android:label="dsh-pm"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
+        <!-- usesCleartextTraffic: the gateway is plain ws:// on LAN (ADR-012:
+             0.0.0.0:8765 + token as the boundary). Required on API 28+. -->
 
         <activity
             android:name=".MainActivity"
