@@ -17,6 +17,7 @@ object VoiceStatus {
         "assistant_start" -> "🔊"
         "assistant_end" -> "✔"
         "interrupted" -> "⚡"
+        "yield" -> "🤝" // AND4-4 server-driven 让位 note
         else -> "·"
     }
 

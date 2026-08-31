@@ -44,12 +44,20 @@ class AudioTrackTrackFactory : TrackFactory {
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                 .build(),
-            AudioTrack.MODE_STREAM,
+            // API order: (attributes, format, bufferSizeInBytes, mode, sessionId)
+            // — buffer BEFORE mode. The swapped order passed mode=bufferBytes and
+            // threw "Invalid mode" on every create (exposed by AND4-4 yield: the
+            // mute window used to eat the downlink before a track was ever needed).
             bufferFrames * 2,
+            AudioTrack.MODE_STREAM,
             AudioManager.AUDIO_SESSION_ID_GENERATE,
         )
         track.setVolume(1.0f) // ②e: explicit full track gain
         RealHandle(track)
+    }.onFailure {
+        // ②d diagnosability: a silent create() null reads as a dead device;
+        // the actual throwable is the fork between config vs device failure.
+        Log.w(AndroidPlayerSink.TAG, "AudioTrack create failed: ${it.javaClass.simpleName}: ${it.message}")
     }.getOrNull()
 
     private class RealHandle(private val track: AudioTrack) : AudioTrackHandle {

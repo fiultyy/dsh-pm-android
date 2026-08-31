@@ -214,4 +214,138 @@ class VoiceControllerTest {
         e.ctrl.onFrame(HeadSwitchResult(reqId = "hs-1", ok = false, active = "nova", note = "unknown head"))
         assertEquals("nova", e.ctrl.state.activeHead)
     }
+
+    // -------------------------------------------- AND4-4 服务端驱动让位
+
+    /** During a hold: head.turn(user_end) must yield — stop mic, discard the
+     *  stale coalescer tail, reset PTT, note the transcript, open playback. */
+    @Test
+    fun userEndDuringHoldYieldsCapture() {
+        val e = Env()
+        e.connectAndStartSession()
+        e.ctrl.pttDown()
+        repeat(2) { e.micBlock() } // partial block pending in the coalescer
+        e.ctrl.onFrame(HeadTurn(phase = "user_end"))
+        assertEquals(1, e.mic.stops) // capture ended by the server flip
+        assertEquals(VoiceController.PttState.IDLE, e.ctrl.state.ptt) // button visual reset
+        assertFalse(e.ctrl.state.muted) // mute window opened
+        assertEquals(0, e.audio.size) // 停合块: stale partial discarded, not flushed
+        val yield = e.ctrl.state.transcript.filter { it.phase == VoiceController.YIELD_PHASE }
+        assertEquals(1, yield.size)
+        assertTrue(yield[0].detail!!.contains("自动让位"))
+        e.ctrl.onMedia(ByteArray(64)) // reply now passes
+        assertEquals(1, e.player.queued.size)
+        assertEquals(0, e.ctrl.state.downlinkMuteDropped)
+    }
+
+    /** During a hold: head.turn(assistant_start) also yields. */
+    @Test
+    fun assistantStartDuringHoldYieldsCapture() {
+        val e = Env()
+        e.connectAndStartSession()
+        e.ctrl.pttDown()
+        e.ctrl.onFrame(HeadTurn(phase = "assistant_start"))
+        assertEquals(1, e.mic.stops)
+        assertEquals(VoiceController.PttState.IDLE, e.ctrl.state.ptt)
+        assertFalse(e.ctrl.state.muted)
+        assertEquals(1, e.ctrl.state.transcript.count { it.phase == VoiceController.YIELD_PHASE })
+    }
+
+    /** During a hold (even muted by an earlier interrupted echo): the FIRST
+     *  downlink binary yields AND itself passes through to the player. */
+    @Test
+    fun firstBinaryDuringHoldYieldsAndPasses() {
+        val e = Env()
+        e.connectAndStartSession()
+        e.ctrl.pttDown()
+        e.ctrl.onFrame(HeadTurn(phase = "interrupted")) // mute window re-asserted mid-hold
+        assertTrue(e.ctrl.state.muted)
+        e.ctrl.onMedia(ByteArray(64))
+        assertEquals(1, e.mic.stops) // yielded by the binary itself
+        assertEquals(VoiceController.PttState.IDLE, e.ctrl.state.ptt)
+        assertFalse(e.ctrl.state.muted)
+        assertEquals(1, e.player.queued.size) // the trigger frame passed
+        assertEquals(0, e.ctrl.state.downlinkMuteDropped)
+        assertEquals(1, e.ctrl.state.transcript.count { it.phase == VoiceController.YIELD_PHASE })
+    }
+
+    /** Ordering A — head trigger first: subsequent binaries just play; the
+     *  binary trigger must not double-yield. */
+    @Test
+    fun headYieldThenBinaryDoesNotDoubleYield() {
+        val e = Env()
+        e.connectAndStartSession()
+        e.ctrl.pttDown()
+        e.ctrl.onFrame(HeadTurn(phase = "user_end")) // yield #1
+        e.ctrl.onMedia(ByteArray(10))
+        e.ctrl.onMedia(ByteArray(10))
+        assertEquals(1, e.mic.stops)
+        assertEquals(2, e.player.queued.size)
+        assertEquals(1, e.ctrl.state.transcript.count { it.phase == VoiceController.YIELD_PHASE })
+        assertEquals(0, e.ctrl.state.downlinkMuteDropped)
+    }
+
+    /** Ordering B — binary first: a later head.turn(user_end|assistant_start)
+     *  must not fire a second yield (autoYield guards on CAPTURING). */
+    @Test
+    fun binaryYieldThenHeadTurnsDoNotDoubleYield() {
+        val e = Env()
+        e.connectAndStartSession()
+        e.ctrl.pttDown()
+        e.ctrl.onMedia(ByteArray(10)) // yield #1 (binary)
+        e.ctrl.onFrame(HeadTurn(phase = "user_end"))
+        e.ctrl.onFrame(HeadTurn(phase = "assistant_start"))
+        assertEquals(1, e.mic.stops)
+        assertEquals(1, e.ctrl.state.transcript.count { it.phase == VoiceController.YIELD_PHASE })
+        // both head phases still land in the transcript normally
+        assertTrue(e.ctrl.state.transcript.any { it.phase == "user_end" })
+        assertTrue(e.ctrl.state.transcript.any { it.phase == "assistant_start" })
+        assertEquals(1, e.player.queued.size)
+    }
+
+    /** The finger's late release after a yield is an idempotent no-op. */
+    @Test
+    fun lateReleaseAfterYieldIsNoOp() {
+        val e = Env()
+        e.connectAndStartSession()
+        e.ctrl.pttDown()
+        repeat(2) { e.micBlock() }
+        e.ctrl.onFrame(HeadTurn(phase = "user_end")) // server-driven yield
+        e.ctrl.pttUp() // the finger finally comes off — much later
+        assertEquals(1, e.mic.stops) // NOT stopped a second time
+        assertEquals(0, e.audio.size) // reset coalescer had nothing to flush
+        assertEquals(VoiceController.PttState.IDLE, e.ctrl.state.ptt)
+    }
+
+    /** A plain hold with no server signal must NOT auto-release. */
+    @Test
+    fun plainHoldWithoutServerSignalDoesNotYield() {
+        val e = Env()
+        e.connectAndStartSession()
+        e.ctrl.pttDown()
+        repeat(9) { e.micBlock() } // 450 ms of speech, server stays silent
+        assertEquals(VoiceController.PttState.CAPTURING, e.ctrl.state.ptt)
+        assertEquals(0, e.mic.stops)
+        assertEquals(0, e.ctrl.state.transcript.count { it.phase == VoiceController.YIELD_PHASE })
+        assertEquals(2, e.audio.size) // capture still flows upstream (9 blocks = 2 sends + remainder)
+        e.ctrl.pttUp() // and manual release still works normally
+        assertEquals(1, e.mic.stops)
+        assertEquals(3, e.audio.size) // remainder flushed
+    }
+
+    /** After a yield the button is reusable: a new press starts a fresh round. */
+    @Test
+    fun pttDownAfterYieldStartsFreshCapture() {
+        val e = Env()
+        e.connectAndStartSession()
+        e.ctrl.pttDown()
+        e.ctrl.onFrame(HeadTurn(phase = "user_end")) // yield
+        e.ctrl.pttUp() // late release no-op
+        e.ctrl.pttDown() // user presses again
+        assertEquals(2, e.mic.starts)
+        assertEquals(VoiceController.PttState.CAPTURING, e.ctrl.state.ptt)
+        e.ctrl.onFrame(HeadTurn(phase = "user_end")) // and can yield again
+        assertEquals(2, e.mic.stops)
+        assertEquals(2, e.ctrl.state.transcript.count { it.phase == VoiceController.YIELD_PHASE })
+    }
 }

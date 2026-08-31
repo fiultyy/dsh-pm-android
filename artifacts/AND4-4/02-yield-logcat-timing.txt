@@ -1,0 +1,8 @@
+08-31 11:12:06.997 I/DshPmVoice(10149): capture started: 16000Hz mono int16, block=800 samples
+08-31 11:12:07.948 I/DshPmVoice(10149): playback dropped (interrupt sentinel); written so far 0B
+08-31 11:12:07.951 I/DshPmVoice(10149): playback dropped (interrupt sentinel); written so far 0B
+08-31 11:12:09.361 I/DshPmVoice(10149): capture stopped
+08-31 11:12:10.152 I/DshPmVoice(10149): downlink binary #1: 15360B
+08-31 11:12:10.210 I/DshPmVoice(10149): AudioTrack created+playing (USAGE_MEDIA/SPEECH, vol=1.0)
+08-31 11:12:11.253 I/DshPmVoice(10149): write accounting: 4 calls, 61440B (1280ms audio)
+08-31 11:12:12.453 I/DshPmVoice(10149): write accounting: 8 calls, 119040B (2480ms audio)

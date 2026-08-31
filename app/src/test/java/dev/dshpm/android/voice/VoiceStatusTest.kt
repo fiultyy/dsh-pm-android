@@ -32,4 +32,12 @@ class VoiceStatusTest {
         assertEquals("⚡", VoiceStatus.turnIcon("interrupted"))
         assertEquals("🎤", VoiceStatus.turnIcon("user_start"))
     }
+
+    @Test
+    fun yieldPhaseHasItsOwnTranscriptIcon() {
+        // AND4-4: the server-driven 让位 note renders distinctly
+        assertEquals("🤝", VoiceStatus.turnIcon("yield"))
+        // and after a yield the button reset drives the main visual to idle
+        assertEquals("空闲", VoiceStatus.mainVisual(capturing = false, phase = "yield").second)
+    }
 }

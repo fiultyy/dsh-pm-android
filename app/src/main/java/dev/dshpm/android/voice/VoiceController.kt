@@ -33,6 +33,11 @@ import kotlinx.serialization.json.contentOrNull
  * - Downlink: the receive path ONLY enqueues into [PlayerSink]; barge-in
  *   (`head.turn` phase `user_start`/`interrupted`) mutes + drops immediately
  *   (tk `_DROP_PLAYBACK` semantics); `assistant_start` re-opens playback.
+ * - AND4-4 server-driven yield (服务端驱动让位): while PTT is held, the first
+ *   of `head.turn(user_end)` / `head.turn(assistant_start)` / first downlink
+ *   binary ends capture locally and opens playback, so a head-side VAD
+ *   premature `user_end` can no longer strand the reply inside the mute
+ *   window; the late finger release is an idempotent no-op.
  * - Heads: `head.list` renders the selection row; `head.switch` activates the
  *   single active head (takes effect on the next voice connection).
  *
@@ -187,6 +192,10 @@ class VoiceController(
     }
 
     override fun onMedia(pcm: ByteArray) {
+        // AND4-4 server-driven yield: the FIRST downlink binary while the user
+        // still holds PTT proves the server already flipped the turn — the
+        // hold is stale. Yield before gating so this very frame passes.
+        if (state.ptt == PttState.CAPTURING) autoYield("首帧下行")
         // arrival accounting BEFORE any gating — the ②c fork: frames here but
         // silent ⇒ playback chain; frames absent ⇒ head/VAD upstream of us.
         val s0 = state
@@ -221,10 +230,50 @@ class VoiceController(
                 update(state.copy(phase = phase, muted = true, transcript = transcriptPlus(frame, phase)))
             }
             "assistant_start" -> {
+                // Server flipped the turn to the assistant — if the user is
+                // still holding PTT that hold is stale: yield first, then
+                // re-open playback for the incoming reply.
+                autoYield("head.turn assistant_start")
                 update(state.copy(phase = phase, muted = false, transcript = transcriptPlus(frame, phase)))
+            }
+            "user_end" -> {
+                // Head-side VAD judged the utterance done. If the finger is
+                // still down this is the premature-end case that used to eat
+                // the whole reply inside the mute window: yield now.
+                autoYield("head.turn user_end")
+                update(state.copy(phase = phase, transcript = transcriptPlus(frame, phase)))
             }
             else -> update(state.copy(phase = phase, transcript = transcriptPlus(frame, phase)))
         }
+    }
+
+    /**
+     * AND4-4 server-driven yield (让位): while PTT is held, the FIRST of
+     * `head.turn(user_end)` / `head.turn(assistant_start)` / first downlink
+     * binary ends capture locally — stop the mic, discard the stale coalescer
+     * tail (the server already closed the utterance; sending it back would
+     * look like a new barge-in), reset the button, note the transcript, and
+     * OPEN the mute window so the reply passes. The finger's late release
+     * becomes an idempotent no-op ([pttUp] guards on CAPTURING). No-ops when
+     * not capturing, so repeated triggers cannot double-fire.
+     *
+     * Deliberately NOT done here (forbidden by the AND4-4 brief): caching
+     * downlink for delayed playback (latency) and unconditionally disabling
+     * the mute window outside a yield (echo regression).
+     */
+    private fun autoYield(trigger: String) {
+        val s = state
+        if (s.ptt != PttState.CAPTURING) return
+        mic.stop()
+        coalescer.reset() // 停合块: drop the stale partial block
+        val line = TurnLine(YIELD_PHASE, "服务端已翻回合, 自动让位 ($trigger)", nowMs())
+        update(
+            s.copy(
+                ptt = PttState.IDLE,
+                muted = false, // 开静音窗: the reply must pass
+                transcript = (s.transcript + line).takeLast(TRANSCRIPT_MAX),
+            ),
+        )
     }
 
     private fun transcriptPlus(frame: HeadTurn, phase: String): List<TurnLine> {
@@ -267,5 +316,8 @@ class VoiceController(
 
     companion object {
         const val TRANSCRIPT_MAX = 200
+
+        /** Transcript phase tag for an AND4-4 server-driven yield note. */
+        const val YIELD_PHASE = "yield"
     }
 }
