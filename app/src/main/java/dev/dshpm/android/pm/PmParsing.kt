@@ -21,6 +21,8 @@ data class TicketRow(
     val state: String,
     val deps: List<String>,
     val leaseOwner: String?,
+    /** ISO stamp from the service, when present (drives within-group ordering). */
+    val updatedAt: String? = null,
 )
 
 data class TicketGroup(val state: String, val tickets: List<TicketRow>) {
@@ -52,6 +54,10 @@ data class FlowRow(
 
 object PmParsing {
 
+    /** Board attention priority (AND4-1): live work leads, settled masses sink. */
+    val STATE_PRIORITY: List<String> =
+        listOf("dispatched", "running", "blocked", "done", "merged", "rejected")
+
     fun parseTickets(data: JsonObject?): List<TicketGroup> {
         val rows = data?.get("tickets") as? JsonArray ?: return emptyList()
         val tickets = rows.mapNotNull { el ->
@@ -62,14 +68,43 @@ object PmParsing {
                 state = o.str("state") ?: "?",
                 deps = parseDepsString(o.str("deps")),
                 leaseOwner = o.str("lease_owner"),
+                updatedAt = o.str("updated_at"),
             )
         }
         return groupByState(tickets)
     }
 
-    /** Single-column mobile kanban: stack by state, keep first-appearance order (spec §3). */
-    fun groupByState(tickets: List<TicketRow>): List<TicketGroup> =
-        tickets.groupBy { it.state }.map { (state, list) -> TicketGroup(state, list) }
+    /**
+     * Single-column mobile kanban (AND4-1): groups stack in a fixed attention
+     * priority — dispatched → running → blocked → done → merged → rejected —
+     * so live work leads the board and settled masses (done/merged) sink below
+     * the fold. States outside the priority list (e.g. rolled-back) append
+     * after, in first-appearance order.
+     *
+     * Within a group: rows with a usable `updated_at` lead, newest first; rows
+     * without one trail in service order. Implemented as a total order — a
+     * partial comparator ("compare only when both stamped") is NOT enough:
+     * TimSort detects the initial run via adjacent pairs and an order-violating
+     * equivalence chain (stamped≡unstamped≡stamped) leaves the array untouched.
+     */
+    fun groupByState(tickets: List<TicketRow>): List<TicketGroup> {
+        val byState = tickets.groupBy { it.state }
+        val prioritized = STATE_PRIORITY.filter(byState::containsKey)
+        val rest = byState.keys.filter { it !in STATE_PRIORITY } // first-appearance order
+        return (prioritized + rest).map { state ->
+            TicketGroup(
+                state,
+                byState.getValue(state).sortedWith(
+                    compareBy<TicketRow> { stampMs(it.updatedAt) == null } // stamped lead
+                        .thenByDescending { stampMs(it.updatedAt) ?: 0L }, // newest first
+                ),
+            )
+        }
+    }
+
+    /** Epoch-ms for an ISO-8601 stamp; null when absent/unparseable. */
+    private fun stampMs(iso: String?): Long? =
+        iso?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
 
     /** `deps` arrives as a JSON *string* containing a JSON array — unwrap tolerantly. */
     fun parseDepsString(raw: String?): List<String> {

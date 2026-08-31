@@ -42,6 +42,42 @@ class PmParsingTest {
         assertEquals(listOf("A", "B"), PmParsing.parseDepsString("""["A","B"]"""))
     }
 
+    private fun row(id: String, state: String, updatedAt: String? = null) =
+        TicketRow(id, "t-$id", state, emptyList(), null, updatedAt)
+
+    @Test
+    fun groupOrderFollowsFixedPriorityNotAppearance() {
+        // Live-like shape: done masses lead the service array (41 张置顶误判源),
+        // live states scattered — board must surface dispatched first regardless.
+        val tickets = listOf(
+            row("D1", "done"), row("D2", "done"), row("M1", "merged"),
+            row("R1", "rejected"), row("B1", "blocked"), row("D3", "done"),
+            row("W1", "dispatched"), row("W2", "running"), row("X1", "rolled-back"),
+        )
+        val groups = PmParsing.groupByState(tickets)
+        // priority first; unlisted states (rolled-back) append in first-appearance order
+        assertEquals(
+            listOf("dispatched", "running", "blocked", "done", "merged", "rejected", "rolled-back"),
+            groups.map { it.state },
+        )
+        assertEquals(3, groups.first { it.state == "done" }.count)
+        assertEquals("W1", groups[0].tickets.single().ticketId)
+    }
+
+    @Test
+    fun withinGroupNewestUpdatedFirstMissingStampsKeepServiceOrder() {
+        val tickets = listOf(
+            row("old", "running", "2026-08-30T10:00:00Z"),
+            row("nostamp1", "running"), // no stamp → keeps service position among unstamped
+            row("newest", "running", "2026-08-31T09:00:00Z"),
+            row("nostamp2", "running"),
+            row("garbage", "running", "not-a-date"), // unparseable → treated as absent
+        )
+        val ids = PmParsing.groupByState(tickets).single().tickets.map { it.ticketId }
+        // stamped rows newest-first; unstamped/unparseable keep their service order at the tail
+        assertEquals(listOf("newest", "old", "nostamp1", "nostamp2", "garbage"), ids)
+    }
+
     @Test
     fun parseFleetRealShape() {
         val data = obj(
