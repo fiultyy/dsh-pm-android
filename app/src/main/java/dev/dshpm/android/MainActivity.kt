@@ -1,7 +1,9 @@
 package dev.dshpm.android
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -18,9 +20,12 @@ import dev.dshpm.android.ui.DshPmApp
 import dev.dshpm.android.voice.AndroidMicSource
 import dev.dshpm.android.voice.AndroidPlayerSink
 import dev.dshpm.android.voice.VoiceController
+import dev.dshpm.android.voice.VoiceForegroundService
 import dev.dshpm.proto.frame.ClientFrame
 import dev.dshpm.proto.frame.ErrorFrame
 import dev.dshpm.proto.frame.MalformedFrame
+import dev.dshpm.proto.frame.Ping
+import dev.dshpm.proto.frame.Pong
 import dev.dshpm.proto.frame.UnknownFrame
 import dev.dshpm.proto.frame.WsFrame
 import dev.dshpm.proto.ws.ConnectionState
@@ -67,12 +72,26 @@ class MainActivity : ComponentActivity() {
     private var config by mutableStateOf(GatewayConfig.DEFAULT)
     private var nowMs by mutableLongStateOf(System.currentTimeMillis())
     private var micPermission by mutableStateOf(false)
+    private var notifPermission by mutableStateOf(false)
+
+    // AND5-1: app-layer ping RTT diagnostic (Settings 诊断 section)
+    private var rttMs by mutableStateOf<Long?>(null)
+    private val lastPingAtMs = AtomicReference<Long?>(null)
 
     private var client: VoiceGatewayClient? = null
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             micPermission = granted
+            if (granted) {
+                requestNotifPermissionOnce()
+                startVoiceForeground()
+            }
+        }
+
+    private val notifPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            notifPermission = granted
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -110,6 +129,7 @@ class MainActivity : ComponentActivity() {
                 state = uiState,
                 config = config,
                 nowMs = nowMs,
+                rttMs = rttMs,
                 onConfigSaved = { saved ->
                     config = saved
                     settings.save(saved) // cold-start restore (spec §3 验收 7)
@@ -127,7 +147,15 @@ class MainActivity : ComponentActivity() {
                 ),
                 onVoiceTabActive = { active ->
                     voice.wantsSession = active
-                    if (active) voice.activate() else voice.deactivate()
+                    if (active) {
+                        voice.activate()
+                        // AND5-1 ②: session up → mic-type FGS keeps the one WS
+                        // + audio path alive through lock screen/background.
+                        if (micPermission) startVoiceForeground() else requestMicPermission()
+                    } else {
+                        voice.deactivate()
+                        stopVoiceForeground()
+                    }
                 },
             )
         }
@@ -138,10 +166,24 @@ class MainActivity : ComponentActivity() {
         }, 30_000, 30_000, TimeUnit.MILLISECONDS)
 
         reconnect(config)
+
+        // AND5-1: app-layer RTT probe — Ping has no ts (WS v1 frozen), so
+        // latency is measured client-side around the send; the first Pong
+        // after a probe settles it (≈值, internal 30s pings add ≤ one interval).
+        scheduler.scheduleAtFixedRate({
+            if (client != null) {
+                lastPingAtMs.set(System.currentTimeMillis())
+                sendRef.get().invoke(Ping)
+            }
+        }, 5_000, 5_000, TimeUnit.MILLISECONDS)
     }
 
     private fun hasMicPermission(): Boolean =
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun hasNotifPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
 
     private fun requestMicPermission() {
@@ -149,9 +191,40 @@ class MainActivity : ComponentActivity() {
         else micPermission = true
     }
 
+    private fun requestNotifPermissionOnce() {
+        if (Build.VERSION.SDK_INT >= 33 && !notifPermission) {
+            notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    /** FGS start is foreground-only + mic-granted; never let it crash the page. */
+    private fun startVoiceForeground() {
+        runCatching { VoiceForegroundService.start(this) }
+            .onFailure { android.util.Log.w(TAG, "voice FGS start failed: ${it.message}") }
+    }
+
+    private fun stopVoiceForeground() {
+        runCatching { VoiceForegroundService.stop(this) }
+            .onFailure { android.util.Log.w(TAG, "voice FGS stop failed: ${it.message}") }
+    }
+
     private fun reconnect(cfg: GatewayConfig) {
         client?.close()
-        val listener = FanOutListener(controller, voice)
+        rttMs = null
+        if (cfg.token.isBlank()) {
+            // AND5-1 ④: 无 token — 引导页阶段不发任何网关连接.
+            sendRef.set { }
+            audioRef.set { }
+            client = null
+            android.util.Log.i(TAG, "token blank — gateway connect skipped (onboarding)")
+            return
+        }
+        val listener = FanOutListener(controller, voice, onPong = {
+            lastPingAtMs.getAndSet(null)?.let { sentAt ->
+                val sample = System.currentTimeMillis() - sentAt
+                runOnUiThread { rttMs = sample }
+            }
+        })
         val fresh = VoiceGatewayClient(
             uri = URI.create(cfg.wsUri()),
             token = cfg.token,
@@ -176,10 +249,19 @@ class MainActivity : ComponentActivity() {
         fresh.connect()
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // AND5-1 ③: launcher relaunch / dshpm://launch deep link lands here
+        // (singleTask) — reuse THIS instance and its ONE WebSocket; never
+        // reconnect from an intent (double-instance / double-WS red line).
+        android.util.Log.i(TAG, "onNewIntent ${intent.data} — instance reused, no reconnect")
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         if (isFinishing) {
             runCatching { voice.deactivate() }
+            stopVoiceForeground()
             client?.close()
             mic.close()
             player.close()
@@ -189,10 +271,13 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private const val TAG = "DshPmMain"
+
 /** Boards and voice share one connection; frames fan out to both. */
 private class FanOutListener(
     private val board: BoardController,
     private val voice: VoiceController,
+    private val onPong: () -> Unit = {},
 ) : GatewayListener {
     override fun onState(state: ConnectionState) {
         board.onState(state)
@@ -200,6 +285,7 @@ private class FanOutListener(
     }
 
     override fun onFrame(frame: WsFrame) {
+        if (frame is Pong) onPong() // AND5-1: RTT probe settle
         board.onFrame(frame)
         voice.onFrame(frame)
     }

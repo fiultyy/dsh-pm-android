@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">dsh-pm</string>
+    <string name="voice_channel_name">语音会话</string>
+    <string name="voice_notif_title">语音会话进行中</string>
+    <string name="voice_notif_text">语音网关保持连接 — 点按回到会话</string>
+</resources>

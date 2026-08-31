@@ -11,8 +11,8 @@ android {
         applicationId = "dev.dshpm.android"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.4.4"
+        versionCode = 2
+        versionName = "0.5.0"
     }
 
     buildTypes {

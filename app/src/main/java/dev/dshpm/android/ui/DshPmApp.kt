@@ -55,7 +55,15 @@ fun DshPmApp(
     voiceState: VoiceController.VoiceState = VoiceController.VoiceState(),
     voiceHooks: VoiceHooks = VoiceHooks(true, {}, {}, {}, {}),
     onVoiceTabActive: (Boolean) -> Unit = {},
+    rttMs: Long? = null,
 ) {
+    // AND5-1 ④: 无 token → 引导页代替 5-Tab (无连接、无语音入口);
+    // 保存 token 后 onConfigSaved 重连并进入主界面.
+    if (config.token.isBlank()) {
+        OnboardingScreen(config, onConfigSaved)
+        return
+    }
+
     var tab by rememberSaveable { mutableStateOf(Tab.TICKETS) }
 
     // AND4-2 ④: 语音 tab 生命周期——进入建会话, 退出优雅结束
@@ -91,7 +99,7 @@ fun DshPmApp(
                 Tab.FLEET -> FleetScreen(state, nowMs)
                 Tab.FLOW -> FlowScreen(state)
                 Tab.VOICE -> VoiceScreen(voiceState, voiceHooks)
-                Tab.SETTINGS -> SettingsScreen(config, onConfigSaved)
+                Tab.SETTINGS -> SettingsScreen(config, onConfigSaved, rttMs)
             }
         }
     }

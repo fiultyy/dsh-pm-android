@@ -2,6 +2,7 @@ package dev.dshpm.android.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -16,87 +17,70 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import dev.dshpm.android.pm.GatewayConfig
-import dev.dshpm.proto.ws.ConnectionState
 
-/** 设置屏: LAN host/port/token 输入 + 网关诊断(RTT), 保存即重连 (spec-android §2/§3 AND5-1). */
+/**
+ * AND5-1 ④: 无 token 引导页 — token 为空时替代 5-Tab 主界面。此阶段
+ * MainActivity 对 blank token 跳过 connect(零网络流量、零崩溃路径);
+ * 填齐 host/port/token 保存即进入主界面并开始重连。
+ */
 @Composable
-fun SettingsScreen(config: GatewayConfig, onSave: (GatewayConfig) -> Unit, rttMs: Long? = null) {
+fun OnboardingScreen(config: GatewayConfig, onSave: (GatewayConfig) -> Unit) {
     var host by remember { mutableStateOf(config.host) }
     var port by remember { mutableStateOf(config.port) }
     var token by remember { mutableStateOf(config.token) }
-    var saved by remember { mutableStateOf(false) }
 
     Column(
         Modifier
-            .fillMaxWidth()
+            .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("网关连接", style = MaterialTheme.typography.titleMedium)
+        Text("欢迎使用 dsh-pm 移动观测台", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "模拟器访问宿主网关用 10.0.2.2(宿主 loopback 别名); 真机用 LAN IP(如 192.168.3.196)。token=VOICE_GATEWAY_TOKEN, 仅存本机不入日志。",
+            "尚未配置网关 token。请填写与 pm-host-service 同一 LAN 的网关地址与 " +
+                "token(VOICE_GATEWAY_TOKEN); 保存后进入票板 / 席位 / 流程 / 语音。",
             style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
             value = host,
-            onValueChange = { host = it; saved = false },
-            label = { Text("LAN host") },
+            onValueChange = { host = it },
+            label = { Text("LAN host (如 192.168.3.196)") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
             value = port,
-            onValueChange = { port = it; saved = false },
-            label = { Text("port") },
+            onValueChange = { port = it },
+            label = { Text("port (默认 8765)") },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
             value = token,
-            onValueChange = { token = it; saved = false },
+            onValueChange = { token = it },
             label = { Text("token (VOICE_GATEWAY_TOKEN)") },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
             modifier = Modifier.fillMaxWidth(),
         )
         Button(
-            onClick = {
-                onSave(GatewayConfig(host.trim(), port.trim(), token.trim()))
-                saved = true
-            },
+            onClick = { onSave(GatewayConfig(host.trim(), port.trim(), token.trim())) },
             enabled = host.isNotBlank() && port.isNotBlank() && token.isNotBlank(),
         ) {
-            Text("保存并重连")
-        }
-        if (saved) {
-            Text("已保存 — 重连中, 见顶部状态条", style = MaterialTheme.typography.bodySmall)
+            Text("保存并进入")
         }
         Text(
-            "状态: ${ConnectionState.entries.joinToString()} 见票板顶部徽标; 单 token 并发 ≤2(PC+手机同时在线时第三连接被拒属预期)。",
-            style = MaterialTheme.typography.labelSmall,
-        )
-        Text("诊断", style = MaterialTheme.typography.titleMedium)
-        Text(
-            "网关地址: ${config.host}:${config.port}",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Text(
-            "token: ${if (config.token.isBlank()) "未配置(保存后需重连)" else "已配置(仅存本机)"}",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Text(
-            "网关 RTT(app 层 ping): " + (rttMs?.let { "$it ms" } ?: "测量中…"),
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Text(
-            "RTT 由客户端对 ping→pong 计时(≈值, 30s 心跳混叠误差 ≤ 一周期); 离线/重连窗口显示 测量中…。",
+            "说明: token 仅存本机 SharedPreferences, 不入日志; 单 token 网关并发 ≤2。",
             style = MaterialTheme.typography.labelSmall,
         )
     }
