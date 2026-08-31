@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Settings
@@ -32,12 +33,14 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import dev.dshpm.android.pm.BoardController
 import dev.dshpm.android.pm.GatewayConfig
+import dev.dshpm.android.voice.VoiceController
 import dev.dshpm.proto.ws.ConnectionState
 
 private enum class Tab(val label: String, val icon: ImageVector) {
     TICKETS("票板", Icons.Filled.List),
     FLEET("席位", Icons.Filled.Place),
     FLOW("流程", Icons.Filled.Star),
+    VOICE("语音", Icons.Filled.Phone),
     SETTINGS("设置", Icons.Filled.Settings),
 }
 
@@ -49,8 +52,19 @@ fun DshPmApp(
     config: GatewayConfig,
     nowMs: Long,
     onConfigSaved: (GatewayConfig) -> Unit,
+    voiceState: VoiceController.VoiceState = VoiceController.VoiceState(),
+    voiceHooks: VoiceHooks = VoiceHooks(true, {}, {}, {}, {}),
+    onVoiceTabActive: (Boolean) -> Unit = {},
 ) {
     var tab by rememberSaveable { mutableStateOf(Tab.TICKETS) }
+
+    // AND4-2 ④: 语音 tab 生命周期——进入建会话, 退出优雅结束
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose { onVoiceTabActive(false) }
+    }
+    androidx.compose.runtime.LaunchedEffect(tab) {
+        onVoiceTabActive(tab == Tab.VOICE)
+    }
     Scaffold(
         topBar = { StatusBar(state, config) },
         bottomBar = {
@@ -76,6 +90,7 @@ fun DshPmApp(
                 Tab.TICKETS -> TicketsScreen(state)
                 Tab.FLEET -> FleetScreen(state, nowMs)
                 Tab.FLOW -> FlowScreen(state)
+                Tab.VOICE -> VoiceScreen(voiceState, voiceHooks)
                 Tab.SETTINGS -> SettingsScreen(config, onConfigSaved)
             }
         }

@@ -22,8 +22,16 @@ dsh-pm-android (root)
 │           │           (pm.req 首拉+pm.sub 订阅+pm.event 300ms 去抖重拉,
 │           │           pm_sub_failed/ended 自动重订),PmParsing 纯解析,
 │           │           SettingsStore 配置。UI 零直接网络调用(红线)。
+│           ├── voice/  AND4-2 语音页: VoiceController 纯逻辑视图模型
+│           │           (session.start observe:false 生命周期/PTT 本地采集闸/
+│           │           head.turn 打断哨兵 mute+dropAll/head.list+switch),
+│           │           ChunkCoalescer 200ms 合块(4×800 样本, tk BLOCK 对齐),
+│           │           AndroidMicSource(AudioRecord 16k/mono/int16) +
+│           │           AndroidPlayerSink(AudioTrack 24k, 独立播放线程,
+│           │           清队列先行+哨兵断流的 tk _DROP_PLAYBACK 同款)
 │           └── MainActivity: controller↔Compose 桥(mutableStateOf),
-│                       30s ping + 30s 相对时间 ticker
+│                       30s ping + 30s 相对时间 ticker; FanOutListener
+│                       (板+语音共用一条网关连接)
 └── proto/  纯 JVM Kotlin library —— AND-001 v1 帧集协议绑定(AND2-3,冻结)
     ├── frame/   48 个帧类型密封层级: ClientFrame(18 入向) + ServerFrame(16 应答)
     │            + EventFrame(14 事件 kind);另有 UnknownFrame/MalformedFrame 容忍壳
@@ -64,7 +72,8 @@ sdk.dir=/home/yy/Android/Sdk
 
 ```bash
 ./gradlew :proto:test                     # 纯 JVM 单测(30 例 + 1 例集成测默认跳过)
-./gradlew :app:testDebugUnitTest          # app 单测(17 例: PmParsing 7 + BoardController 10)
+./gradlew :app:testDebugUnitTest          # app 单测(33 例: PmParsing 9 + BoardController 10
+                                          #          + ChunkCoalescer 3 + VoiceController 11)
 ./gradlew :app:assembleDebug              # APK: app/build/outputs/apk/debug/app-debug.apk
 ```
 
@@ -102,6 +111,29 @@ MainActivity 桥(mutableStateOf + runOnUiThread)→ Compose 三视图重绘
 只读红线:三视图无任何写控件;BoardController 永不发写帧;UI 层零直接网络调用
 (全部经注入的 sendPort→VoiceGatewayClient)。
 
+## 语音面数据流(AND4-2)
+
+```
+VoiceGatewayClient (一条连接, 板+语音共用)
+      │ FanOutListener 分流
+      ├─ BoardController (pm 面, 同前)
+      └─ VoiceController (语音面)
+          │ 语音 tab 激活 → session.start{observe:false};退出 → session.end
+          │ PTT 按住/松开 → MicSource 起/停(本地采集闸;v1 无 mic 帧, tk 同款)
+          │ MicSource 800样本块 → ChunkCoalescer 200ms 合块 → sendAudio(binary)
+          │ head.turn user_start/interrupted → mute + PlayerSink.dropAll(哨兵)
+          │ head.turn assistant_start → unmute;user_text/assistant_end → 流水
+          │ head.list/head.switch → head 单选行
+          ▼
+AudioTrack 播放线程(24k int16): 收帧循环只入队;打断=清队列先行再入哨兵
+```
+
+### 并发闸注记(单 token ≤2)
+
+网关按 token 限并发连接数 ≤2。本 app 板面与语音面**共用一条连接**(上表数据流),
+即手机端整 app 只占 1 席;PC 端 tk(语音+观测两条)占满 2 席时,手机连接被拒
+(concurrent_limit 错误帧, 状态条红显)属预期——错峰使用或关掉 PC 端一条连接。
+
 ## 模拟器验收(AND3-1 实证,artifacts/AND3-1/)
 
 AVD `Medium_Phone_API_36.1`(headless `-no-window -gpu swiftshader_indirect`),
@@ -113,6 +145,20 @@ app 直连宿主 `10.0.2.2:8765` 真网关 + pm-host-service(127.0.0.1:35451):
 | 2 | CLI 变票→pm.event→UI ≤2.5s | 09-pmevent-before(在 running 组)→`ledger ticket state`→10-pmevent-after(票移出,组 2张→1张) |
 | 3 | 弱网 | svc wifi/data 断 10s:横幅"连接断开,自动重连中…"(11);恢复后在线+横幅清+重拉(12) |
 | 4 | 后台→前台 | 09:10 起后台 ≥2min(缩短自 5min,note: 期间 WS 断开由重连+全量重拉恢复,与 5min 行为一致)→回前台在线(13) |
+
+### AND4-2 语音页验收(NE2210 真机, 0.4.0, artifacts/AND4-2/)
+
+| 项 | 证据 |
+|---|---|
+| 语音 tab 会话+head 行 | 01-voice-tab-live: 在线(s-xxx) + ●Nova 激活 + Echo/Scribe 单选行 |
+| PTT→ASR→应答 | 02/04: 三轮 user_start→interrupted→user_text(扬声器串扰实测转写)→assistant_start→Nova 回复文本;上行 89 块 |
+| 打断即时静音 | logcat: playback dropped (interrupt sentinel) ×N(user_start/interrupted 触发) |
+| 采集门控 | logcat: capture started/stopped 与 PTT 按住/松开一一对应 |
+| AudioTrack | 修复 API36 3参 write "Invalid mode"(改 WRITE_BLOCKING): 旧 build 49 错→新 build 0 错 |
+
+注:真机声学注入曾借媒体库自播(扬声器→mic 串扰),验收后已彻底清理
+(sdcard/媒体库测试音频删除, 音乐 App 队列已暂停复位);可闻播放的最后
+一轮验证因停止占用音乐 App 而未再进行——以 write 零错误+哨兵日志为证。
 
 注:swiftshader 软渲染下连续快速 fling 可能卡渲染线程(进程与 WS 不受影响,HOME 可恢复);
 验收操作以单次慢速 swipe 进行。
