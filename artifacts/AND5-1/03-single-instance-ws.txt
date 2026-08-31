@@ -1,0 +1,10 @@
+# AND5-1 验收③ evidence 2026-08-31T21:43:31+08:00
+## repeated launch (launcher)
+DshPmMain: onNewIntent null — instance reused, no reconnect
+## deep link dshpm://launch
+DshPmMain: onNewIntent dshpm://launch — instance reused, no reconnect
+## process count: pidof -> 1
+## WS sockets after relaunches:
+Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
+0      0      192.168.3.196:8765 192.168.3.232:39210       
+peer 192.168.3.232 = device NE2210 44581ee0

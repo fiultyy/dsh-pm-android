@@ -1,0 +1,6 @@
+# AND5-1 验收② screen-off FGS sampling (T0=1788183887)
+t=14s wakefulness=- fgs_records=1 ws_conns=1
+t=195s wakefulness=- fgs_records=1 ws_conns=1
+t=375s wakefulness=- fgs_records=1 ws_conns=1
+t=555s wakefulness=- fgs_records=1 ws_conns=1
+t=735s wakefulness=- fgs_records=1 ws_conns=1
