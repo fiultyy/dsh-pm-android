@@ -160,6 +160,14 @@ app 直连宿主 `10.0.2.2:8765` 真网关 + pm-host-service(127.0.0.1:35451):
 (sdcard/媒体库测试音频删除, 音乐 App 队列已暂停复位);可闻播放的最后
 一轮验证因停止占用音乐 App 而未再进行——以 write 零错误+哨兵日志为证。
 
+### AND4-3 两缺陷修复(0.4.1)
+
+| 缺陷 | 根因判定 | 修复与证据 |
+|---|---|---|
+| ① 按住中显"已打断"误读为录音失败 | 呈现层相位直驱主状态:回合中再按 PTT 的 head `interrupted` 顶掉采集态(语义对呈现错) | `VoiceStatus.mainVisual`:PTT 持有恒为主状态"收音中",中断降为流水条目(⚡);单测 4 例;真机按压中 dump=🎤 收音中(artifacts/AND4-3/02) |
+| ② 下行 TTS 无声 | 待分叉(②c):JVM 真语音轮 frames=9/126720B/muteDropped=0/queuedBytes=126720 → **帧必到+全入队**;设备路由 dumpsys: STREAM_MUSIC→speaker, 无通信路由劫持(②a/b 排除);write 链已修 API36 3参调用(②d 部署计数) | 打点三件套:屏显角标"↓帧 N/字节 M/弃 K"(到达先于静音闸计数)+logcat `downlink binary #N` 每 25 帧+`write accounting` 每 2s 音频量;`setVolume(1.0)` 显式(②e)。设备下一轮真人发声即可现场分叉:帧>0 无声=播放链(看 write 日志), 帧=0=头/VAD 门 |
+| 集成测 | 真语音轮(base64 内嵌 2.35s 段)+并发闸 assume-跳过(单 token ≤2 满员为环境态) | `VoiceSpeechRoundIntegrationTest`(默认跳过):user_text 转写+assistant_end+下行计数断言全绿;并发满员时 assume-skip 不误报 |
+
 注:swiftshader 软渲染下连续快速 fling 可能卡渲染线程(进程与 WS 不受影响,HOME 可恢复);
 验收操作以单次慢速 swipe 进行。
 

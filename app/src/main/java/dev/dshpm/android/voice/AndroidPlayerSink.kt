@@ -6,17 +6,77 @@ import android.media.AudioManager
 import android.media.AudioTrack
 import android.util.Log
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 /**
- * AudioTrack-backed player (AND4-2 ③): 24 kHz int16 mono downlink TTS.
- *
- * tk `_DROP_PLAYBACK` semantics, Android flavour: the WS receive loop only
- * enqueues; this worker owns the device. Interrupt = clear the queue FIRST,
- * then post the sentinel — a sentinel queued behind stale audio would wait
- * out the whole backlog. On the sentinel the worker pauses + flushes the
- * AudioTrack (flush discards already-buffered samples → immediate silence).
+ * Testable AudioTrack abstraction (AND4-3 ②d): production wraps a real
+ * MODE_STREAM track; unit tests inject a counting mock.
  */
-class AndroidPlayerSink : PlayerSink {
+interface AudioTrackHandle {
+    fun play()
+    fun pause()
+    fun flush()
+    fun stop()
+    fun release()
+    fun setVolume(v: Float)
+
+    /** Blocking write; returns bytes written (0/negative = failure). */
+    fun write(bytes: ByteArray): Int
+}
+
+interface TrackFactory {
+    /** null = device unavailable (worker drops chunks and continues). */
+    fun create(sampleRate: Int, bufferFrames: Int): AudioTrackHandle?
+}
+
+/** Production factory: USAGE_MEDIA + CONTENT_TYPE_SPEECH (②a — explicitly NOT
+ *  USAGE_VOICE_COMMUNICATION, which routes to the near-silent earpiece). */
+class AudioTrackTrackFactory : TrackFactory {
+    override fun create(sampleRate: Int, bufferFrames: Int): AudioTrackHandle? = runCatching {
+        val track = AudioTrack(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build(),
+            AudioFormat.Builder()
+                .setSampleRate(sampleRate)
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                .build(),
+            AudioTrack.MODE_STREAM,
+            bufferFrames * 2,
+            AudioManager.AUDIO_SESSION_ID_GENERATE,
+        )
+        track.setVolume(1.0f) // ②e: explicit full track gain
+        RealHandle(track)
+    }.getOrNull()
+
+    private class RealHandle(private val track: AudioTrack) : AudioTrackHandle {
+        override fun play() = track.play()
+        override fun pause() = track.pause()
+        override fun flush() = track.flush()
+        override fun stop() = track.stop()
+        override fun release() = track.release()
+        override fun setVolume(v: Float) { track.setVolume(v) }
+
+        override fun write(bytes: ByteArray): Int =
+            // explicit mode: the 3-arg legacy write throws "Invalid mode" on API 36
+            track.write(bytes, 0, bytes.size, AudioTrack.WRITE_BLOCKING)
+    }
+}
+
+/**
+ * AudioTrack-backed player (AND4-2 ③ / AND4-3 ②): 24 kHz int16 mono downlink
+ * TTS. tk `_DROP_PLAYBACK` semantics — the WS receive loop only enqueues;
+ * this worker owns the device. Interrupt clears the queue FIRST, then posts
+ * the sentinel. Write accounting (②d) logs byte totals so "frames arrived
+ * but silent" is diagnosable from logcat alone.
+ */
+class AndroidPlayerSink(
+    private val factory: TrackFactory = AudioTrackTrackFactory(),
+    private val sampleRate: Int = SAMPLE_RATE,
+) : PlayerSink {
 
     private sealed interface Item {
         data class Pcm(val bytes: ByteArray) : Item
@@ -27,14 +87,19 @@ class AndroidPlayerSink : PlayerSink {
     private val started = java.util.concurrent.atomic.AtomicBoolean(false)
     private var thread: Thread? = null
 
+    /** Bytes successfully handed to the device (observability; read after close or mid-run). */
+    val writtenBytes = AtomicLong(0)
+    val writeCalls = AtomicLong(0)
+
     fun start() {
         if (!started.compareAndSet(false, true)) return
         thread = Thread({
-            var track: AudioTrack? = null
-            Log.i(TAG, "playback worker up: ${SAMPLE_RATE}Hz mono int16")
+            var track: AudioTrackHandle? = null
+            var lastLogWritten = 0L
+            Log.i(TAG, "playback worker up: ${sampleRate}Hz mono int16")
             while (started.get()) {
                 val item = try {
-                    queue.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
+                    queue.poll(200, TimeUnit.MILLISECONDS) ?: continue
                 } catch (_: InterruptedException) {
                     break
                 }
@@ -45,29 +110,30 @@ class AndroidPlayerSink : PlayerSink {
                             runCatching { it.flush() } // discard buffered samples
                         }
                         queue.clear() // drop everything queued behind us too
-                        Log.i(TAG, "playback dropped (interrupt sentinel)")
+                        Log.i(TAG, "playback dropped (interrupt sentinel); written so far ${writtenBytes.get()}B")
                     }
                     is Item.Pcm -> {
                         try {
                             if (track == null) {
-                                track = AudioTrack(
-                                    AudioAttributes.Builder()
-                                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                                        .build(),
-                                    AudioFormat.Builder()
-                                        .setSampleRate(SAMPLE_RATE)
-                                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                                        .build(),
-                                    AudioTrack.MODE_STREAM,
-                                    SAMPLE_RATE / 5, // 200 ms device buffer
-                                    AudioManager.AUDIO_SESSION_ID_GENERATE,
-                                ).also { it.play(); Log.i(TAG, "AudioTrack started") }
+                                track = factory.create(sampleRate, sampleRate / 5)?.also {
+                                    it.setVolume(1.0f) // ②e explicit full gain
+                                    it.play()
+                                    Log.i(TAG, "AudioTrack created+playing (USAGE_MEDIA/SPEECH, vol=1.0)")
+                                }
                             }
-                            // explicit write mode: the 3-arg legacy write throws
-                            // "Invalid mode" on API 36 (observed on NE2210)
-                            track.write(item.bytes, 0, item.bytes.size, AudioTrack.WRITE_BLOCKING)
+                            if (track != null) {
+                                val n = track.write(item.bytes)
+                                writeCalls.incrementAndGet()
+                                if (n > 0) writtenBytes.addAndGet(n.toLong())
+                                // ②d: periodic write accounting (every ~1s of audio)
+                                if (writtenBytes.get() - lastLogWritten >= sampleRate * 2) {
+                                    lastLogWritten = writtenBytes.get()
+                                    Log.i(TAG, "write accounting: ${writeCalls.get()} calls, ${writtenBytes.get()}B (${writtenBytes.get() * 1000 / (sampleRate * 2)}ms audio)")
+                                }
+                                if (n < 0) Log.w(TAG, "write returned $n")
+                            } else {
+                                Log.w(TAG, "no track (device unavailable); dropped ${item.bytes.size}B")
+                            }
                         } catch (t: Throwable) {
                             Log.e(TAG, "playback write failed: ${t.message}")
                             runCatching { track?.release() }
@@ -78,7 +144,7 @@ class AndroidPlayerSink : PlayerSink {
             }
             runCatching { track?.stop() }
             runCatching { track?.release() }
-            Log.i(TAG, "playback worker down")
+            Log.i(TAG, "playback worker down; total written ${writtenBytes.get()}B in ${writeCalls.get()} writes")
         }, "dshpm-play").apply { isDaemon = true; start() }
     }
 

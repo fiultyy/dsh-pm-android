@@ -126,6 +126,24 @@ class VoiceControllerTest {
     // ------------------------------------------------------- barge-in 状态机
 
     @Test
+    fun downlinkCountersCountArrivalsEvenWhileMuted() {
+        val e = Env()
+        e.connectAndStartSession()
+        e.ctrl.onFrame(HeadTurn(phase = "user_start")) // muted
+        e.ctrl.onMedia(ByteArray(100))
+        e.ctrl.onMedia(ByteArray(50))
+        assertEquals(2, e.ctrl.state.downlinkFrames) // ②c: arrivals counted pre-gate
+        assertEquals(150, e.ctrl.state.downlinkBytes)
+        assertEquals(2, e.ctrl.state.downlinkMuteDropped)
+        assertEquals(0, e.player.queued.size) // ...but nothing enqueued while muted
+        e.ctrl.onFrame(HeadTurn(phase = "assistant_start"))
+        e.ctrl.onMedia(ByteArray(70))
+        assertEquals(3, e.ctrl.state.downlinkFrames)
+        assertEquals(2, e.ctrl.state.downlinkMuteDropped) // unchanged by the unmuted frame
+        assertEquals(1, e.player.queued.size)
+    }
+
+    @Test
     fun userStartInterruptsDropsPlaybackAndMutesDownlink() {
         val e = Env()
         e.connectAndStartSession()

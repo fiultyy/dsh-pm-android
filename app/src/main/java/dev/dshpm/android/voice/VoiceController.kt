@@ -68,6 +68,11 @@ class VoiceController(
         val switchNote: String? = null,
         val error: String? = null,
         val upstreamBlocks: Long = 0,
+        /** AND4-3 ②c instrumentation: downlink binaries SEEN (before the mute gate). */
+        val downlinkFrames: Long = 0,
+        val downlinkBytes: Long = 0,
+        /** Binaries dropped because we were inside a barge-in mute window. */
+        val downlinkMuteDropped: Long = 0,
     )
 
     @Volatile
@@ -182,7 +187,18 @@ class VoiceController(
     }
 
     override fun onMedia(pcm: ByteArray) {
-        if (state.muted) return // barge-in window: stale assistant audio is dropped
+        // arrival accounting BEFORE any gating — the ②c fork: frames here but
+        // silent ⇒ playback chain; frames absent ⇒ head/VAD upstream of us.
+        val s0 = state
+        val dropped = if (s0.muted) s0.downlinkMuteDropped + 1 else s0.downlinkMuteDropped
+        update(
+            s0.copy(
+                downlinkFrames = s0.downlinkFrames + 1,
+                downlinkBytes = s0.downlinkBytes + pcm.size,
+                downlinkMuteDropped = dropped,
+            ),
+        )
+        if (s0.muted) return // barge-in window: stale assistant audio is dropped
         player.enqueue(pcm)
     }
 

@@ -33,17 +33,6 @@ import androidx.compose.ui.text.style.TextAlign
 import dev.dshpm.android.voice.VoiceController
 import dev.dshpm.proto.ws.ConnectionState
 
-/** head.turn phase → (icon, label). */
-private fun phaseVisual(phase: String?): Pair<String, String> = when (phase) {
-    "user_start" -> "🎤" to "聆听中"
-    "user_end" -> "…" to "理解中"
-    "user_text" -> "📝" to "已识别"
-    "assistant_start" -> "🔊" to "播报中"
-    "assistant_end" -> "✔" to "回合结束"
-    "interrupted" -> "✂" to "已打断"
-    else -> "💤" to "空闲"
-}
-
 /**
  * 语音页 (AND4-2): PTT 按住说话 + 回合状态 + head 选择行 + 回合流水。
  * RECORD_AUDIO 被拒 → 显式空态 + 说明 (不闪退、不黑盒)。
@@ -69,7 +58,11 @@ fun VoiceScreen(state: VoiceController.VoiceState, hooks: VoiceHooks) {
         return
     }
 
-    val (icon, label) = phaseVisual(state.phase)
+    // AND4-3 ①: PTT-held wins the main status; barge-in events stay in the transcript
+    val (icon, label) = dev.dshpm.android.voice.VoiceStatus.mainVisual(
+        capturing = state.ptt == VoiceController.PttState.CAPTURING,
+        phase = state.phase,
+    )
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp2())) {
         Spacer(Modifier.height(8.dp2()))
 
@@ -100,6 +93,12 @@ fun VoiceScreen(state: VoiceController.VoiceState, hooks: VoiceHooks) {
             Text(icon, style = MaterialTheme.typography.headlineMedium)
             Column {
                 Text(label, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "↓帧 ${state.downlinkFrames} · ${state.downlinkBytes}B" +
+                        (if (state.downlinkMuteDropped > 0) " · 弃${state.downlinkMuteDropped}" else ""),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Text(
                     when (state.session) {
                         VoiceController.SessionState.IDLE -> "会话未开始"
@@ -137,7 +136,7 @@ fun VoiceScreen(state: VoiceController.VoiceState, hooks: VoiceHooks) {
             } else {
                 LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(4.dp2())) {
                     items(state.transcript) { line ->
-                        val (li, _) = phaseVisual(line.phase)
+                        val li = dev.dshpm.android.voice.VoiceStatus.turnIcon(line.phase)
                         Text(
                             "$li ${line.detail ?: line.phase ?: ""}",
                             style = MaterialTheme.typography.bodySmall,

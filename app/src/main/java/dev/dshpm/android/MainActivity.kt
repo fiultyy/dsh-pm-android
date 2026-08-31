@@ -203,7 +203,14 @@ private class FanOutListener(
         voice.onFrame(frame)
     }
 
+    private var mediaSeen = 0L
+
     override fun onMedia(pcm: ByteArray) {
+        // AND4-3 ②c: arrival probe — first + every 25th frame lands in logcat
+        mediaSeen++
+        if (mediaSeen == 1L || mediaSeen % 25L == 0L) {
+            android.util.Log.i("DshPmVoice", "downlink binary #${mediaSeen}: ${pcm.size}B")
+        }
         voice.onMedia(pcm)
     }
 
